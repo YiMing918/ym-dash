@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>站点总览 · ym-dash</title>
+<meta name="description" content="ym-dash：自部署的网站状态总览——自动探活、可用率、掉线事件，一页看清。">
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --fg:#1c2430; --muted:#66707d; --line:#e3e7ec;
+    --accent:#e8710a; --up:#1db954; --down:#e5484d; --warn:#f5a623;
+    --chip:#eef1f4; --shadow:0 1px 3px rgba(16,24,40,.06);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#12161c; --card:#1a2027; --fg:#e8edf2; --muted:#94a1b0; --line:#2a323c; --chip:#232b34; --shadow:none; }
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif; }
+  a{ color:var(--accent); text-decoration:none; }
+  .wrap{ max-width:860px; margin:0 auto; padding:14px 12px 40px; }
+  header.top{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  header.top h1{ font-size:20px; margin:4px 0; }
+  header.top .sp{ flex:1; }
+  button{ font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:9px; padding:6px 12px; }
+  button.primary{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger{ color:var(--down); }
+  button.sm{ padding:3px 9px; font-size:13px; border-radius:7px; }
+  input,textarea{ font:inherit; width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:9px; background:var(--card); color:var(--fg); }
+  label{ display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  .summary{ display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
+  .stat{ background:var(--card); border:1px solid var(--line); border-radius:11px; padding:8px 14px; box-shadow:var(--shadow); font-size:14px; }
+  .stat b{ font-size:17px; }
+  .alert{ background:#fdecec; border:1px solid var(--down); color:#8f1d20; border-radius:11px; padding:10px 14px; margin:10px 0; font-size:14px; }
+  @media (prefers-color-scheme: dark){ .alert{ background:#3a1d1f; color:#ffb3b6; } }
+  .demo{ background:#fff7e8; border:1px dashed var(--warn); color:#7a5200; border-radius:11px; padding:9px 14px; margin:10px 0; font-size:14px; }
+  @media (prefers-color-scheme: dark){ .demo{ background:#33270f; color:#ffd88a; } }
+  .toolbar{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:12px 0; }
+  .toolbar .search{ flex:1; min-width:160px; }
+  .chip{ border-radius:999px; padding:5px 13px; font-size:13px; background:var(--chip); border:1px solid transparent; }
+  .chip.on{ background:var(--accent); color:#fff; }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:13px; padding:12px 14px; margin:10px 0; box-shadow:var(--shadow); }
+  .row1{ display:flex; align-items:center; gap:9px; }
+  .dot{ width:11px; height:11px; border-radius:50%; flex:none; background:var(--muted); }
+  .dot.up{ background:var(--up); } .dot.down{ background:var(--down); }
+  .name{ font-weight:600; font-size:16px; color:var(--fg); }
+  .badge{ font-size:11px; background:var(--warn); color:#fff; border-radius:5px; padding:1px 6px; }
+  .row1 .ops{ margin-left:auto; display:flex; gap:6px; flex:none; }
+  .meta{ color:var(--muted); font-size:13px; margin-top:3px; word-break:break-all; }
+  .nums{ display:flex; gap:14px; flex-wrap:wrap; font-size:13px; margin-top:7px; }
+  .nums span b{ font-weight:600; }
+  .bad{ color:var(--down); }
+  .trend{ display:flex; gap:2px; margin-top:8px; }
+  .trend i{ flex:1; height:14px; border-radius:3px; background:var(--chip); }
+  .trend i.up{ background:var(--up); } .trend i.down{ background:var(--down); }
+  .detail{ border-top:1px dashed var(--line); margin-top:11px; padding-top:10px; display:none; }
+  .detail.open{ display:block; }
+  .hist{ font-size:13px; color:var(--muted); max-height:180px; overflow:auto; }
+  .hist div{ padding:2px 0; border-bottom:1px solid var(--line); }
+  .ev{ font-size:13px; }
+  .panel{ background:var(--card); border:1px solid var(--line); border-radius:13px; padding:14px; margin:12px 0; box-shadow:var(--shadow); }
+  .panel h3{ margin:2px 0 6px; font-size:16px; }
+  .hidden{ display:none !important; }
+  .msg{ font-size:14px; margin:8px 0; }
+  .msg.err{ color:var(--down); } .msg.ok{ color:var(--up); }
+  footer{ color:var(--muted); font-size:12.5px; text-align:center; margin-top:26px; }
+  svg.chart{ width:100%; height:64px; display:block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1 id="siteTitle">站点总览</h1>
+    <span class="sp"></span>
+    <span id="authArea"></span>
+  </header>
+
+  <div id="alertBox"></div>
+  <div id="demoBox"></div>
+  <div class="summary" id="summary"></div>
+
+  <div class="toolbar">
+    <input class="search" id="q" type="search" placeholder="搜索站名 / 网址 / 备注…">
+    <button class="chip on" data-f="all">全部</button>
+    <button class="chip" data-f="up">正常</button>
+    <button class="chip" data-f="down">异常</button>
+    <span class="sp" style="flex:1"></span>
+    <span id="adminTools"></span>
+  </div>
+
+  <div id="list"></div>
+
+  <div class="panel hidden" id="editPanel">
+    <h3 id="editTitle">添加站点</h3>
+    <label>站名（Name）</label><input id="fName" placeholder="例如：我的博客">
+    <label>网址（URL，只允许 http/https）</label><input id="fUrl" placeholder="https://example.com">
+    <label>备注（Note，可空）</label><input id="fNote" placeholder="例如：主站，每日备份">
+    <div style="margin-top:12px; display:flex; gap:8px;">
+      <button class="primary" id="fSave">保存</button>
+      <button id="fCancel">取消</button>
+    </div>
+    <div class="msg err" id="fMsg"></div>
+  </div>
+
+  <div class="panel hidden" id="authPanel"></div>
+
+  <div class="panel">
+    <h3>最近事件（Events）</h3>
+    <div class="ev" id="events">—</div>
+  </div>
+
+  <footer>ym-dash · 每 30 分钟自动探活一次 · 探活结果是 Cloudflare 出口视角，不代表访客本地网络</footer>
+</div>
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const state = { me: { initialized: false, user: null }, data: null, filter: 'all', q: '', editingId: null, details: {} };
+
+const DEMO = [
+  { id: 'demo1', demo: true, name: '示例站 · Example', url: 'https://example.com', note: '示例数据（Demo）', last: null, uptime24h: null, trend: [], downSince: null },
+  { id: 'demo2', demo: true, name: '示例站 · Wikipedia', url: 'https://www.wikipedia.org', note: '示例数据（Demo）', last: null, uptime24h: null, trend: [], downSince: null },
+];
+
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function fmtTime(t) { return t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+function fmtDur(ms) {
+  if (ms == null) return '—';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + ' 秒';
+  if (s < 3600) return Math.floor(s / 60) + ' 分钟';
+  if (s < 86400) return Math.floor(s / 3600) + ' 小时 ' + Math.floor((s % 3600) / 60) + ' 分';
+  return Math.floor(s / 86400) + ' 天 ' + Math.floor((s % 86400) / 3600) + ' 小时';
+}
+async function api(method, path, body) {
+  const r = await fetch(path, {
+    method, credentials: 'same-origin',
+    headers: body ? { 'content-type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false) throw new Error(j.error || `请求失败 ${r.status}`);
+  return j.data;
+}
+</script>
+<script>
+'use strict';
+/* ---------- 渲染 ---------- */
+function sitesShown() {
+  const d = state.data;
+  let sites = d ? d.sites : [];
+  if (d && sites.length === 0) sites = DEMO;
+  const q = state.q.trim().toLowerCase();
+  return sites.filter(s => {
+    if (state.filter === 'up' && !(s.last && s.last.up)) return false;
+    if (state.filter === 'down' && !(s.last && !s.last.up)) return false;
+    if (q && !(s.name.toLowerCase().includes(q) || s.url.toLowerCase().includes(q) || (s.note || '').toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function render() {
+  const d = state.data, me = state.me;
+  $('#siteTitle').textContent = (d && d.title) || '站点总览';
+  document.title = ((d && d.title) || '站点总览') + ' · ym-dash';
+
+  // 顶部告警：有异常站时置顶红条
+  const downs = (d ? d.sites : []).filter(s => s.last && !s.last.up);
+  $('#alertBox').innerHTML = downs.length
+    ? `<div class="alert">⚠ ${downs.map(s => `<b>${esc(s.name)}</b> 已掉线 ${fmtDur(Date.now() - (s.downSince || (s.last && s.last.t) || Date.now()))}`).join('；')}</div>`
+    : '';
+
+  // 示例模式提示
+  $('#demoBox').innerHTML = (d && d.sites.length === 0)
+    ? `<div class="demo">示例模式（Demo）：下面是内置示例站，不是真在监控。${me.user ? '点「添加站点」加上你自己的站后，示例自动消失。' : '站长初始化 / 登录后可添加自己的站点。'}</div>`
+    : '';
+
+  // 汇总条
+  const c = d ? d.counts : { total: 0, up: 0, down: 0 };
+  $('#summary').innerHTML =
+    `<div class="stat">共 <b>${c.total}</b> 站</div>` +
+    `<div class="stat">正常 <b style="color:var(--up)">${c.up}</b></div>` +
+    `<div class="stat">异常 <b style="color:var(--down)">${c.down}</b></div>` +
+    `<div class="stat">最近检测：${fmtTime(d && d.checkedAt)}</div>`;
+
+  // 登录区
+  const aa = $('#authArea');
+  if (!me.initialized) aa.innerHTML = `<button class="primary" onclick="showSetup()">站长初始化</button>`;
+  else if (!me.user) aa.innerHTML = `<button onclick="showLogin()">站长登录</button>`;
+  else aa.innerHTML = `<span style="color:var(--muted);font-size:13px;">站长 ${esc(me.user)}</span> <button class="sm" onclick="doLogout()">退出</button>`;
+
+  // 站长工具
+  $('#adminTools').innerHTML = me.user
+    ? `<button class="sm primary" onclick="showAdd()">＋ 添加站点</button> <button class="sm" onclick="checkAll(this)">全部重测</button> <button class="sm" onclick="editTitle()">改标题</button>`
+    : '';
+
+  // 站点列表
+  const list = sitesShown();
+  $('#list').innerHTML = list.length ? list.map(cardHTML).join('') : `<div class="card" style="color:var(--muted)">没有符合条件的站点。</div>`;
+
+  // 事件
+  const evs = d ? d.events : [];
+  $('#events').innerHTML = evs.length
+    ? evs.map(e => `<div style="padding:3px 0;border-bottom:1px solid var(--line)">${e.type === 'down' ? '🔴' : '🟢'} <b>${esc(e.name)}</b> ${e.type === 'down' ? '掉线' : '恢复'} · ${esc(e.detail || '')} · <span style="color:var(--muted)">${fmtTime(e.t)}</span></div>`).join('')
+    : '<span style="color:var(--muted)">暂无事件。</span>';
+}
+
+function cardHTML(s) {
+  const last = s.last;
+  const dotCls = last ? (last.up ? 'up' : 'down') : '';
+  const statusTxt = last ? (last.status ? `HTTP ${last.status}` : '无响应') : '未检测';
+  const trend = (s.trend || []).slice().reverse().map(h => `<i class="${h.up ? 'up' : 'down'}" title="${fmtTime(h.t)} · ${h.ms}ms"></i>`).join('')
+    || '<span style="color:var(--muted);font-size:12px;">暂无检测记录</span>';
+  const ops = state.me.user && !s.demo
+    ? `<span class="ops">
+         <button class="sm" onclick="retest('${s.id}',this)">重测</button>
+         <button class="sm" onclick="showEdit('${s.id}')">编辑</button>
+         <button class="sm danger" onclick="delSite('${s.id}','${esc(s.name)}')">删除</button>
+       </span>` : '';
+  return `<div class="card" id="card-${s.id}">
+    <div class="row1">
+      <span class="dot ${dotCls}"></span>
+      <a class="name" href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.name)}</a>
+      ${s.demo ? '<span class="badge">示例</span>' : ''}
+      ${ops}
+    </div>
+    <div class="meta">${esc(s.url)}${s.note ? ' · ' + esc(s.note) : ''} · <a href="javascript:void(0)" onclick="copyUrl('${esc(s.url)}')">复制地址</a></div>
+    <div class="nums">
+      <span>状态 <b class="${last && !last.up ? 'bad' : ''}">${statusTxt}</b></span>
+      <span>延迟 <b>${last ? last.ms + ' ms' : '—'}</b></span>
+      <span>24h 可用率 <b>${s.uptime24h == null ? '—' : s.uptime24h + ' %'}</b></span>
+      <span>最近检测 <b>${fmtTime(last && last.t)}</b></span>
+      ${last && !last.up && last.err ? `<span class="bad">${esc(last.err)}</span>` : ''}
+    </div>
+    <div class="trend">${trend}</div>
+    <div style="margin-top:8px;"><button class="sm" onclick="toggleDetail('${s.id}')">详情（24h 走势 / 历史 / 事件）</button></div>
+    <div class="detail" id="detail-${s.id}"></div>
+  </div>`;
+}
+
+/* ---------- 详情 ---------- */
+async function toggleDetail(id) {
+  const box = document.getElementById('detail-' + id);
+  if (box.classList.contains('open')) { box.classList.remove('open'); return; }
+  box.classList.add('open');
+  if (id.startsWith('demo')) { box.innerHTML = '<span style="color:var(--muted)">示例站没有检测历史。</span>'; return; }
+  box.innerHTML = '加载中…';
+  try {
+    const d = await api('GET', '/api/detail/' + encodeURIComponent(id));
+    state.details[id] = d;
+    // 延迟走势：最近 24h 的 ms 点连成线（纯 SVG）
+    const pts = d.hist.filter(h => Date.now() - h.t < 24 * 3600 * 1000).slice().reverse();
+    let chart = '<span style="color:var(--muted)">24 小时内暂无数据</span>';
+    if (pts.length > 1) {
+      const max = Math.max(...pts.map(p => p.ms), 100);
+      const W = 600, H = 64;
+      const line = pts.map((p, i) => `${(i / (pts.length - 1) * W).toFixed(1)},${(H - 6 - (p.ms / max) * (H - 14)).toFixed(1)}`).join(' ');
+      chart = `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline points="${line}" fill="none" stroke="var(--accent)" stroke-width="2"/></svg>
+        <div style="font-size:12px;color:var(--muted)">最近 24 小时延迟走势（峰值 ${max} ms）</div>`;
+    }
+    box.innerHTML = chart +
+      `<div class="hist" style="margin-top:8px;">${d.hist.map(h => `<div>${h.up ? '🟢' : '🔴'} ${fmtTime(h.t)} · ${h.status ? 'HTTP ' + h.status : '无响应'} · ${h.ms} ms${h.err ? ' · ' + esc(h.err) : ''}</div>`).join('') || '暂无历史'}</div>` +
+      (d.events.length ? `<div class="ev" style="margin-top:8px;">${d.events.map(e => `<div>${e.type === 'down' ? '🔴 掉线' : '🟢 恢复'} · ${esc(e.detail || '')} · ${fmtTime(e.t)}</div>`).join('')}</div>` : '');
+  } catch (e) { box.innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+}
+
+/* ---------- 站长操作 ---------- */
+function panel(html) { const p = $('#authPanel'); p.innerHTML = html; p.classList.remove('hidden'); p.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+function hidePanel() { $('#authPanel').classList.add('hidden'); $('#authPanel').innerHTML = ''; }
+function showSetup() {
+  panel(`<h3>站长初始化（Setup）</h3><div style="color:var(--muted);font-size:13px;">第一次使用先设置站长账号；设置完成后此入口自动关闭。</div>
+    <label>用户名</label><input id="aUser" autocomplete="username">
+    <label>密码（至少 6 位）</label><input id="aPass" type="password" autocomplete="new-password">
+    <div style="margin-top:12px;display:flex;gap:8px;"><button class="primary" onclick="doSetup()">创建并登录</button><button onclick="hidePanel()">取消</button></div>
+    <div class="msg err" id="aMsg"></div>`);
+}
+async function doSetup() {
+  try {
+    await api('POST', '/api/setup', { username: $('#aUser').value, password: $('#aPass').value });
+    hidePanel(); await load();
+  } catch (e) { $('#aMsg').textContent = e.message; }
+}
+function showLogin() {
+  panel(`<h3>站长登录（Login）</h3>
+    <label>用户名</label><input id="aUser" autocomplete="username">
+    <label>密码</label><input id="aPass" type="password" autocomplete="current-password">
+    <div style="margin-top:12px;display:flex;gap:8px;"><button class="primary" onclick="doLogin()">登录</button><button onclick="hidePanel()">取消</button></div>
+    <div class="msg err" id="aMsg"></div>
+    <div style="color:var(--muted);font-size:12.5px;margin-top:8px;">忘记密码？按仓库 MAINTENANCE.md 的恢复步骤，在 Cloudflare 后台删掉 KV 的 admin 键即可重新初始化。</div>`);
+}
+async function doLogin() {
+  try {
+    await api('POST', '/api/login', { username: $('#aUser').value, password: $('#aPass').value });
+    hidePanel(); await load();
+  } catch (e) { $('#aMsg').textContent = e.message; }
+}
+async function doLogout() { await api('POST', '/api/logout'); await load(); }
+
+function showAdd() {
+  state.editingId = null;
+  $('#editTitle').textContent = '添加站点';
+  $('#fName').value = ''; $('#fUrl').value = ''; $('#fNote').value = ''; $('#fMsg').textContent = '';
+  $('#editPanel').classList.remove('hidden');
+  $('#editPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+function showEdit(id) {
+  const s = state.data.sites.find(x => x.id === id);
+  if (!s) return;
+  state.editingId = id;
+  $('#editTitle').textContent = '编辑站点';
+  $('#fName').value = s.name; $('#fUrl').value = s.url; $('#fNote').value = s.note || ''; $('#fMsg').textContent = '';
+  $('#editPanel').classList.remove('hidden');
+  $('#editPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+$('#fCancel').onclick = () => $('#editPanel').classList.add('hidden');
+$('#fSave').onclick = async () => {
+  const body = { name: $('#fName').value, url: $('#fUrl').value, note: $('#fNote').value };
+  try {
+    if (state.editingId) await api('PUT', '/api/sites/' + encodeURIComponent(state.editingId), body);
+    else await api('POST', '/api/sites', body);
+    $('#editPanel').classList.add('hidden');
+    await load();
+  } catch (e) { $('#fMsg').textContent = e.message; }
+};
+async function delSite(id, name) {
+  if (!confirm(`确定删除「${name}」吗？它的检测历史会一并删除。`)) return;
+  await api('DELETE', '/api/sites/' + encodeURIComponent(id));
+  await load();
+}
+async function retest(id, btn) {
+  btn.disabled = true; btn.textContent = '检测中…';
+  try { await api('POST', '/api/sites/' + encodeURIComponent(id) + '/check'); } catch (e) { alert(e.message); }
+  await load();
+}
+async function checkAll(btn) {
+  btn.disabled = true; btn.textContent = '检测中…';
+  try { await api('POST', '/api/check'); } catch (e) { alert(e.message); }
+  await load();
+}
+async function editTitle() {
+  const t = prompt('新的站点标题：', (state.data && state.data.title) || '站点总览');
+  if (!t) return;
+  await api('PUT', '/api/settings', { title: t });
+  await load();
+}
+async function copyUrl(u) {
+  try { await navigator.clipboard.writeText(u); }
+  catch {
+    const ta = document.createElement('textarea');
+    ta.value = u; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); ta.remove();
+  }
+  alert('已复制：' + u);
+}
+
+/* ---------- 搜索 / 筛选 / 启动 ---------- */
+$('#q').addEventListener('input', e => { state.q = e.target.value; render(); });
+document.querySelectorAll('.chip').forEach(ch => ch.addEventListener('click', () => {
+  document.querySelectorAll('.chip').forEach(x => x.classList.remove('on'));
+  ch.classList.add('on'); state.filter = ch.dataset.f; render();
+}));
+
+async function load() {
+  try {
+    state.me = await api('GET', '/api/me');
+    state.data = await api('GET', '/api/public');
+  } catch (e) {
+    $('#list').innerHTML = `<div class="card bad">加载失败：${esc(e.message)}（多半是 KV 还没绑好，绑定名要叫 DASH_KV）</div>`;
+    return;
+  }
+  render();
+}
+load();
+</script>
+</body>
+</html>
