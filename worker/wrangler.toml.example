@@ -1,0 +1,15 @@
+# ym-dash-check 探活 Worker 配置示例
+# 用法：在 worker/ 目录里复制为 wrangler.toml，KV id 必须与主站绑的是同一个命名空间，
+# 然后 `wrangler deploy`。也可以在 Cloudflare 后台 Workers 里新建、粘贴 worker.js、
+# 绑 KV、加 Cron 触发器（*/30 * * * *），效果一样。
+name = "ym-dash-check"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# 每 30 分钟触发一次全量探活
+[triggers]
+crons = ["*/30 * * * *"]
+
+[[kv_namespaces]]
+binding = "DASH_KV"
+id = "在这里填与主站相同的KV命名空间ID"
