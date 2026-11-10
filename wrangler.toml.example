@@ -1,0 +1,12 @@
+# ym-dash 主站（Pages）配置示例
+# 用法：复制为 wrangler.toml 后把 KV id 换成你自己的；也可以不用 wrangler，
+# 直接在 Cloudflare 后台建 Pages 项目、上传代码，并在设置里手动绑 KV（绑定名必须叫 DASH_KV）。
+name = "ym-dash"
+compatibility_date = "2024-11-01"
+pages_build_output_dir = "."
+
+# KV：先 `wrangler kv namespace create DASH_KV`（或后台 存储和数据库 → KV → 创建命名空间），
+# 把生成的 id 填到下面。注意：探活 Worker（worker/ 目录）要绑同一个 namespace id。
+[[kv_namespaces]]
+binding = "DASH_KV"
+id = "在这里填你的KV命名空间ID"
