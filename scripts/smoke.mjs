@@ -105,7 +105,8 @@ async function setupAndLogin(env) {
   check('A11 公开汇总计数 total=2 up=1 down=1', d.counts.total === 2 && d.counts.up === 1 && d.counts.down === 1, JSON.stringify(d.counts));
   check('A12 可用率：正常站 100 / 故障站 0', upSite.uptime24h === 100 && downSite.uptime24h === 0);
   check('A13 故障站生成 down 事件 + downSince 落库', d.events.some(e => e.siteId === downId && e.type === 'down') && !!downSite.downSince);
-  check('A14 历史落库：故障站 hist 有记录', JSON.parse(await env.DASH_KV.get(`hist:${downId}`)).length >= 1);
+  const histAllA = JSON.parse(await env.DASH_KV.get('histall') || '{"sites":{}}');
+  check('A14 历史落库：故障站 hist 有记录', (histAllA.sites[downId] || []).length >= 1);
 
   // 故障站恢复 → 应生成 up 事件
   net.set('https://down.example.com/', 'up');
@@ -123,7 +124,8 @@ async function setupAndLogin(env) {
 
   r = await req(env, 'DELETE', `/api/sites/${upId}`, { cookie });
   check('A19 删除站点成功', r.status === 200);
-  check('A20 删除连带清掉 hist/state', (await env.DASH_KV.get(`hist:${upId}`)) === null && (await env.DASH_KV.get(`state:${upId}`)) === null);
+  const histAllDel = JSON.parse(await env.DASH_KV.get('histall') || '{"sites":{}}');
+  check('A20 删除连带清掉 hist/state', (await env.DASH_KV.get(`hist:${upId}`)) === null && !histAllDel.sites[upId] && (await env.DASH_KV.get(`state:${upId}`)) === null);
   r = await req(env, 'GET', '/api/public');
   check('A21 删除后公开列表只剩 1 站', r.j.data.sites.length === 1);
 
@@ -169,7 +171,8 @@ async function setupAndLogin(env) {
   const downId = rd.j.data.site.id;
 
   await worker.scheduled({}, env, { waitUntil() {} });
-  const hist = JSON.parse(await env.DASH_KV.get(`hist:${downId}`) || '[]');
+  const histAllD = JSON.parse(await env.DASH_KV.get('histall') || '{"sites":{}}');
+  const hist = histAllD.sites[downId] || [];
   check('D1 Worker scheduled 真落库：故障站 hist 有 down 记录', hist.length >= 1 && hist[0].up === false);
   const meta = JSON.parse(await env.DASH_KV.get('meta') || '{}');
   check('D2 Worker 写回 meta.lastCheckAt', !!meta.lastCheckAt);
@@ -186,8 +189,9 @@ async function setupAndLogin(env) {
     { id: 'evil2', name: '内网IP', url: 'http://192.168.0.1/', note: '', createdAt: Date.now() },
   ]));
   await worker.scheduled({}, env, { waitUntil() {} });
-  const h1 = JSON.parse(await env.DASH_KV.get('hist:evil1') || '[]');
-  const h2 = JSON.parse(await env.DASH_KV.get('hist:evil2') || '[]');
+  const histAllE = JSON.parse(await env.DASH_KV.get('histall') || '{"sites":{}}');
+  const h1 = histAllE.sites.evil1 || [];
+  const h2 = histAllE.sites.evil2 || [];
   check('E1 Worker 对 IPv6 回环只记跳过、不真探', h1.length === 1 && h1[0].up === false && h1[0].err.includes('不安全'), JSON.stringify(h1[0] || {}));
   check('E2 Worker 对内网 IPv4 只记跳过、不真探', h2.length === 1 && h2[0].up === false && h2[0].err.includes('不安全'), JSON.stringify(h2[0] || {}));
 }

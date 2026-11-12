@@ -4,7 +4,8 @@
 // 下面 validateUrl / probeUrl / checkSite 的逻辑与站点侧
 // functions/_lib/probe.js、functions/_lib/store.js 是同一套，故意各存一份：
 // Worker 独立部署、不能跨目录 import。改任何一处（超时、状态判定、数据结构、
-// SSRF 规则），必须同步改另一处。数据键：sites / hist:<id> / state:<id> / events / meta。
+// SSRF 规则），必须同步改另一处。数据键：sites / histall / state:<id> / events / meta
+// （hist:<id> 为旧版式历史键，只读回退，不再写入）。
 
 const HIST_CAP = 96;
 const EVENTS_CAP = 100;
@@ -18,6 +19,37 @@ return JSON.parse(raw);
 }
 async function kvPutJSON(env, key, value) {
 await env.DASH_KV.put(key, JSON.stringify(value));
+}
+
+// === 历史合并存储（与 functions/_lib/store.js 的 loadHistBatch 同步）===
+// 全部站点历史合并存一个 histall 键，一轮全量探活只在收尾写 1 次（旧版式
+// 每站一个 hist:<id>、一轮写 N 次 ≈ 480 次/天，是写额度的主要消耗）。
+// 结构 { v: 1, sites: { <siteId>: [rec] } }，新在前、每站截断 HIST_CAP。
+// 合并键里没有的站点回退读旧 hist:<id> 键，存量历史无缝衔接。
+const HISTALL_KEY = 'histall';
+async function loadHistBatch(env) {
+const all = await kvGetJSON(env, HISTALL_KEY, null);
+const batch = {
+sites: (all && typeof all === 'object' && all.sites) || {},
+legacy: {},
+dirty: false,
+async get(id) {
+if (batch.sites[id]) return batch.sites[id];
+if (!(id in batch.legacy)) batch.legacy[id] = await kvGetJSON(env, 'hist:' + id, []);
+return batch.legacy[id];
+},
+async push(id, rec) {
+const cur = await batch.get(id);
+batch.sites[id] = [rec].concat(cur).slice(0, HIST_CAP);
+batch.dirty = true;
+},
+async flush() {
+if (!batch.dirty) return;
+await kvPutJSON(env, HISTALL_KEY, { v: 1, sites: batch.sites });
+batch.dirty = false;
+},
+};
+return batch;
 }
 
 // === 与 functions/_lib/probe.js 同步 ===
@@ -76,17 +108,17 @@ clearTimeout(timer);
 }
 
 // === 与 functions/_lib/store.js 的 checkSite / runCheckAll 同步 ===
-async function checkSite(env, site) {
+async function checkSite(env, site, batch) {
 if (!validateUrl(site.url).ok) {
 // 存量站点地址若后来被判定不安全，记一条 down 而不是真去探
 var rec = { t: Date.now(), up: false, status: 0, ms: 0, err: '地址不安全，已跳过探活'};
 } else {
 var rec = await probeUrl(site.url).then(r => ({ t: Date.now(), up: r.up, status: r.status, ms: r.ms, err: r.err || ''}));
 }
-const hist = await kvGetJSON(env, `hist:${site.id}`, []);
-hist.unshift(rec);
-if (hist.length > HIST_CAP) hist.length = HIST_CAP;
-await kvPutJSON(env, `hist:${site.id}`, hist);
+const own = !batch;
+if (own) batch = await loadHistBatch(env);
+await batch.push(site.id, rec);
+if (own) await batch.flush();
 
 const prev = await kvGetJSON(env, `state:${site.id}`, null);
 if (!prev || prev.up!== rec.up) {
@@ -105,7 +137,9 @@ return rec;
 
 async function runCheckAll(env) {
 const sites = await kvGetJSON(env, 'sites', []);
-for (const site of sites) await checkSite(env, site);
+const batch = await loadHistBatch(env);
+for (const site of sites) await checkSite(env, site, batch);
+await batch.flush();
 await kvPutJSON(env, 'meta', { lastCheckAt: Date.now()});
 }
 
