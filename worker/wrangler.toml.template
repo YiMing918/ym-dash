@@ -1,0 +1,14 @@
+# ym-dash-check 的 wrangler 配置模板。
+# 真实命名空间 ID 不写进公开仓库：CI 部署时由 deploy-worker.yml 用仓库 Secret
+# DASH_KV_ID 替换 ${DASH_KV_ID} 生成真正的 wrangler.toml（该文件已在 .gitignore 思路内，勿提交真值）。
+name = "ym-dash-check"
+main = "worker.js"
+compatibility_date = "2026-11-10"
+workers_dev = true
+
+[triggers]
+crons = ["*/30 * * * *"]
+
+[[kv_namespaces]]
+binding = "DASH_KV"
+id = "${DASH_KV_ID}"
