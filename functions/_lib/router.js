@@ -1,7 +1,7 @@
 // router.js — API 路由（functions/api/[[path]].js 只做一行转发到这里，方便本地冒烟直调）
-import { getSites, saveSites, newId, runCheckAll, checkSite, publicData, siteDetail, deleteSiteData, kvPutJSON, getSettings } from './store.js';
+import { getSites, getSitesStrict, saveSites, newId, runCheckAll, checkSite, publicData, siteDetail, deleteSiteData, clearSiteHistory, kvPutJSON, getSettings } from './store.js';
 import { validateUrl } from './probe.js';
-import { getAdmin, setupAdmin, verifyLogin, createSession, destroySession, getSessionUser, sessionCookie, clearCookie } from './auth.js';
+import { getAdmin, setupAdmin, verifyLogin, createSession, destroySession, getSessionUser, sessionCookie, clearCookie, safeEq } from './auth.js';
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -51,8 +51,13 @@ export async function handle({ request, env }) {
 
     // ---------- 初始化（仅未初始化时开放） ----------
     if (method === 'POST' && path === '/api/setup') {
-      if (await getAdmin(env)) return fail(403, '已初始化，初始化入口已关闭');
       const b = await bodyJSON(request);
+      // 部署时若设了环境变量 SETUP_TOKEN，初始化必须带对口令——
+      // 防的是「未初始化窗口」被路过的人抢先认领站长
+      if (env.SETUP_TOKEN && !safeEq(String(b?.setupToken || ''), String(env.SETUP_TOKEN))) {
+        return fail(403, '初始化口令不正确（部署时设置的 SETUP_TOKEN）');
+      }
+      if (await getAdmin(env)) return fail(403, '已初始化，初始化入口已关闭');
       const username = String(b?.username || '').trim();
       const password = String(b?.password || '');
       if (!username || username.length > 32) return fail(400, '用户名不能为空（≤32 字）');
@@ -66,7 +71,8 @@ export async function handle({ request, env }) {
     if (method === 'POST' && path === '/api/login') {
       if (!(await getAdmin(env))) return fail(403, '尚未初始化，请先设置站长账号');
       const b = await bodyJSON(request);
-      const r = await verifyLogin(env, String(b?.username || ''), String(b?.password || ''));
+      const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+      const r = await verifyLogin(env, String(b?.username || ''), String(b?.password || ''), ip);
       if (!r.ok) {
         if (r.locked) return fail(429, `登录失败次数过多，已锁定到 ${new Date(r.locked).toLocaleString('zh-CN')}`);
         return fail(401, '用户名或密码不对');
@@ -95,7 +101,8 @@ export async function handle({ request, env }) {
       const b = await bodyJSON(request);
       const v = cleanSiteInput(b);
       if (v.error) return fail(400, v.error);
-      const sites = await getSites(env);
+      // 写路径一律严格读：读失败就报错收手，绝不能拿空数组当现状去覆盖
+      const sites = await getSitesStrict(env);
       const site = { id: newId(), ...v, createdAt: Date.now() };
       sites.push(site);
       await saveSites(env, sites);
@@ -106,16 +113,19 @@ export async function handle({ request, env }) {
       const b = await bodyJSON(request);
       const v = cleanSiteInput(b);
       if (v.error) return fail(400, v.error);
-      const sites = await getSites(env);
+      const sites = await getSitesStrict(env);
       const site = sites.find(s => s.id === id);
       if (!site) return fail(404, '站点不存在');
+      const urlChanged = v.url !== site.url;
       Object.assign(site, v);
       await saveSites(env, sites);
+      // 网址变了等于换了一个监控目标：清掉旧网址的历史与状态重新算
+      if (urlChanged) await clearSiteHistory(env, id);
       return ok({ site });
     }
     if (method === 'DELETE' && siteMatch) {
       const id = decodeURIComponent(siteMatch[1]);
-      const sites = await getSites(env);
+      const sites = await getSitesStrict(env);
       const next = sites.filter(s => s.id !== id);
       if (next.length === sites.length) return fail(404, '站点不存在');
       await saveSites(env, next);
@@ -124,7 +134,7 @@ export async function handle({ request, env }) {
     }
     if (method === 'POST' && siteCheckMatch) {
       const id = decodeURIComponent(siteCheckMatch[1]);
-      const site = (await getSites(env)).find(s => s.id === id);
+      const site = (await getSitesStrict(env)).find(s => s.id === id);
       if (!site) return fail(404, '站点不存在');
       const rec = await checkSite(env, site);
       return ok({ record: rec });
@@ -143,6 +153,8 @@ export async function handle({ request, env }) {
 
     return fail(404, '接口不存在');
   } catch (e) {
-    return fail(500, `服务器内部错误：${String((e && e.message) || e).slice(0, 120)}`);
+    // 内部错误细节只进服务端日志，不回给访客（可能含 KV/运行时内部信息）
+    console.error('ym-dash api error', e);
+    return fail(500, '服务器内部错误，请稍后重试');
   }
 }

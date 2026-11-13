@@ -213,7 +213,7 @@ function cardHTML(s) {
     ? `<span class="ops">
          <button class="sm" onclick="retest('${s.id}',this)">重测</button>
          <button class="sm" onclick="showEdit('${s.id}')">编辑</button>
-         <button class="sm danger" onclick="delSite('${s.id}','${esc(s.name)}')">删除</button>
+         <button class="sm danger" onclick="delSite('${s.id}',this)">删除</button>
        </span>` : '';
   return `<div class="card" id="card-${s.id}">
     <div class="row1">
@@ -222,7 +222,7 @@ function cardHTML(s) {
       ${s.demo ? '<span class="badge">示例</span>' : ''}
       ${ops}
     </div>
-    <div class="meta">${esc(s.url)}${s.note ? ' · ' + esc(s.note) : ''} · <a href="javascript:void(0)" onclick="copyUrl('${esc(s.url)}')">复制地址</a></div>
+    <div class="meta">${esc(s.url)}${s.note ? ' · ' + esc(s.note) : ''} · <a href="javascript:void(0)" onclick="copyUrl('${s.id}')">复制地址</a></div>
     <div class="nums">
       <span>状态 <b class="${last && !last.up ? 'bad' : ''}">${statusTxt}</b></span>
       <span>延迟 <b>${last ? last.ms + ' ms' : '—'}</b></span>
@@ -269,12 +269,13 @@ function showSetup() {
   panel(`<h3>站长初始化（Setup）</h3><div style="color:var(--muted);font-size:13px;">第一次使用先设置站长账号；设置完成后此入口自动关闭。</div>
     <label>用户名</label><input id="aUser" autocomplete="username">
     <label>密码（至少 6 位）</label><input id="aPass" type="password" autocomplete="new-password">
+    <label>初始化口令（可选）</label><input id="aToken" type="password" autocomplete="off" placeholder="仅当部署时设了 SETUP_TOKEN 环境变量才需要填">
     <div style="margin-top:12px;display:flex;gap:8px;"><button class="primary" onclick="doSetup()">创建并登录</button><button onclick="hidePanel()">取消</button></div>
     <div class="msg err" id="aMsg"></div>`);
 }
 async function doSetup() {
   try {
-    await api('POST', '/api/setup', { username: $('#aUser').value, password: $('#aPass').value });
+    await api('POST', '/api/setup', { username: $('#aUser').value, password: $('#aPass').value, setupToken: $('#aToken').value });
     hidePanel(); await load();
   } catch (e) { $('#aMsg').textContent = e.message; }
 }
@@ -320,8 +321,19 @@ $('#fSave').onclick = async () => {
     await load();
   } catch (e) { $('#fMsg').textContent = e.message; }
 };
-async function delSite(id, name) {
-  if (!confirm(`确定删除「${name}」吗？它的检测历史会一并删除。`)) return;
+// 删除走页内两段确认，不用原生 confirm()：某些内置浏览器/WebView 会
+// 静默吞掉原生对话框（点了没反应、还直接当取消）。站名按 id 从已加载
+// 数据里查，不再把站名拼进 onclick——带引号的站名会把内联脚本拼坏。
+async function delSite(id, btn) {
+  const s = ((state.data && state.data.sites) || []).find(x => x.id === id);
+  const name = s ? s.name : id;
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = '1';
+    const old = btn.textContent;
+    btn.textContent = `再点一次确认删除「${name}」`;
+    setTimeout(() => { if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = old; } }, 3500);
+    return;
+  }
   await api('DELETE', '/api/sites/' + encodeURIComponent(id));
   await load();
 }
@@ -341,7 +353,10 @@ async function editTitle() {
   await api('PUT', '/api/settings', { title: t });
   await load();
 }
-async function copyUrl(u) {
+async function copyUrl(id) {
+  const s = ((state.data && state.data.sites) || []).find(x => x.id === id);
+  const u = s ? s.url : '';
+  if (!u) return;
   try { await navigator.clipboard.writeText(u); }
   catch {
     const ta = document.createElement('textarea');
@@ -360,8 +375,7 @@ document.querySelectorAll('.chip').forEach(ch => ch.addEventListener('click', ()
 
 async function load() {
   try {
-    state.me = await api('GET', '/api/me');
-    state.data = await api('GET', '/api/public');
+    [state.me, state.data] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/public')]);
   } catch (e) {
     $('#list').innerHTML = `<div class="card bad">加载失败：${esc(e.message)}（多半是 KV 还没绑好，绑定名要叫 DASH_KV）</div>`;
     return;

@@ -17,6 +17,13 @@ if (raw == null) return fallback;
 return JSON.parse(raw);
 } catch { return fallback;}
 }
+// 严格版（与 store.js 的 kvGetJSONStrict 同步）：只有键不存在才给
+// fallback，读出错/JSON 损坏直接抛——决定写入的路径绝不能把读失败当空数据
+async function kvGetJSONStrict(env, key, fallback) {
+const raw = await env.DASH_KV.get(key);
+if (raw == null) return fallback;
+return JSON.parse(raw);
+}
 async function kvPutJSON(env, key, value) {
 await env.DASH_KV.put(key, JSON.stringify(value));
 }
@@ -28,11 +35,14 @@ await env.DASH_KV.put(key, JSON.stringify(value));
 // 合并键里没有的站点回退读旧 hist:<id> 键，存量历史无缝衔接。
 const HISTALL_KEY = 'histall';
 async function loadHistBatch(env) {
-const all = await kvGetJSON(env, HISTALL_KEY, null);
+const all = await kvGetJSONStrict(env, HISTALL_KEY, null);
 const batch = {
 sites: (all && typeof all === 'object' && all.sites) || {},
 legacy: {},
 dirty: false,
+touched: new Set(),
+removed: new Set(),
+pendingEvents: [],
 async get(id) {
 if (batch.sites[id]) return batch.sites[id];
 if (!(id in batch.legacy)) batch.legacy[id] = await kvGetJSON(env, 'hist:' + id, []);
@@ -41,12 +51,31 @@ return batch.legacy[id];
 async push(id, rec) {
 const cur = await batch.get(id);
 batch.sites[id] = [rec].concat(cur).slice(0, HIST_CAP);
+batch.touched.add(id);
 batch.dirty = true;
 },
 async flush() {
-if (!batch.dirty) return;
-await kvPutJSON(env, HISTALL_KEY, { v: 1, sites: batch.sites });
+if (batch.dirty) {
+// 合并落盘（与 store.js 同步）：只覆盖本轮动过的站，并发轮次互不抹除；
+// 轮次中被删的站不复活（按 sites 现读过滤）
+const latest = await kvGetJSONStrict(env, HISTALL_KEY, null);
+const merged = { v: 1, sites: Object.assign({}, (latest && latest.sites) || {}) };
+let validIds = null;
+try { validIds = new Set((await kvGetJSON(env, 'sites', [])).map(s => s.id)); } catch { /* 读不到不做删除过滤 */ }
+for (const id of batch.touched) {
+if (validIds && !validIds.has(id)) continue;
+merged.sites[id] = batch.sites[id];
+}
+for (const id of batch.removed) delete merged.sites[id];
+await kvPutJSON(env, HISTALL_KEY, merged);
 batch.dirty = false;
+}
+if (batch.pendingEvents.length) {
+// 事件整轮合并写 1 次（旧版每个翻转站各写一次，同键写太密会被 KV 限流打回、整轮陪葬）
+const events = await kvGetJSON(env, 'events', []);
+await kvPutJSON(env, 'events', batch.pendingEvents.concat(events).slice(0, EVENTS_CAP));
+batch.pendingEvents = [];
+}
 },
 };
 return batch;
@@ -60,10 +89,14 @@ catch { return { ok: false, error: '网址格式不对'};}
 if (u.protocol!== 'http:' && u.protocol!== 'https:') {
 return { ok: false, error: '只允许 http/https 网址'};
 }
+if (u.username || u.password) {
+return { ok: false, error: '网址不能带用户名 / 密码'};
+}
 let host = u.hostname.toLowerCase();
 if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1); // IPv6 字面量去方括号
+host = host.replace(/\.$/, ''); // 尾点规范化，防 localhost. 之类绕过
 if (!host) return { ok: false, error: '网址缺少域名'};
-if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) {
+if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) {
 return { ok: false, error: '不允许本机 / 内网域名'};
 }
 const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
@@ -73,6 +106,8 @@ if (a === 0 || a === 10 || a === 127) return { ok: false, error: '不允许内�
 if (a === 172 && b >= 16 && b <= 31) return { ok: false, error: '不允许内网地址'};
 if (a === 192 && b === 168) return { ok: false, error: '不允许内网地址'};
 if (a === 169 && b === 254) return { ok: false, error: '不允许链路本地地址'};
+if (a === 100 && b >= 64 && b <= 127) return { ok: false, error: '不允许运营商级 NAT 地址（100.64/10）'};
+if (a === 198 && (b === 18 || b === 19)) return { ok: false, error: '不允许基准测试保留地址（198.18/15）'};
 if (a >= 224) return { ok: false, error: '不允许保留地址'};
 }
 if (host.includes(':')) {
@@ -83,25 +118,39 @@ if (host.startsWith('::ffff:')) return { ok: false, error: '不允许 IPv4 映�
 return { ok: true, url: u.toString()};
 }
 
+// 手动跟随重定向（最多 5 跳），每跳重新过 validateUrl，整链共用一个超时
+//（与 probe.js 同步：自动 follow 的第二跳起没人校验，能 302 绕进内网）
 async function probeUrl(url, timeoutMs = 10000) {
 const started = Date.now();
 const ctl = new AbortController();
 const timer = setTimeout(() => ctl.abort(), timeoutMs);
+const done = (up, status, err) => ({ up, status, ms: Date.now() - started, err: err || '' });
 try {
-const res = await fetch(url, {
+let current = url;
+for (let hop = 0; hop <= 5; hop++) {
+const v = validateUrl(current);
+if (!v.ok) return done(false, 0, hop === 0? '地址不安全，已跳过探活': '重定向到不安全地址，已拦截');
+const res = await fetch(v.url, {
 method: 'GET',
-redirect: 'follow',
+redirect: 'manual',
 signal: ctl.signal,
 headers: { 'user-agent': 'ym-dash-probe/1.0 (+status check)'},
 });
-const ms = Date.now() - started;
-try { if (res.body && res.body.cancel) await res.body.cancel();} catch { /* 忽略 */}
 const status = res.status || 0;
-return { up: status >= 200 && status < 400, status, ms, err: status >= 400? `HTTP ${status}`: ''};
+try { if (res.body && res.body.cancel) await res.body.cancel();} catch { /* 忽略 */}
+if (status >= 300 && status < 400) {
+const loc = res.headers.get('location');
+if (!loc) return done(true, status);
+if (hop === 5) return done(false, status, '重定向次数过多');
+try { current = new URL(loc, v.url).toString(); } catch { return done(false, status, '重定向地址无效'); }
+continue;
+}
+return done(status >= 200 && status < 400, status, status >= 400? `HTTP ${status}`: '');
+}
+return done(false, 0, '重定向次数过多');
 } catch (e) {
-const ms = Date.now() - started;
 const err = (e && e.name === 'AbortError')? `超时 ${timeoutMs / 1000}s`: String((e && e.message) || e || '网络错误').slice(0, 120);
-return { up: false, status: 0, ms, err};
+return done(false, 0, err);
 } finally {
 clearTimeout(timer);
 }
@@ -118,28 +167,34 @@ var rec = await probeUrl(site.url).then(r => ({ t: Date.now(), up: r.up, status:
 const own = !batch;
 if (own) batch = await loadHistBatch(env);
 await batch.push(site.id, rec);
-if (own) await batch.flush();
 
-const prev = await kvGetJSON(env, `state:${site.id}`, null);
+const prev = await kvGetJSONStrict(env, `state:${site.id}`, null);
 if (!prev || prev.up!== rec.up) {
 await kvPutJSON(env, `state:${site.id}`, { up: rec.up, since: rec.t});
-const events = await kvGetJSON(env, 'events', []);
-events.unshift({
+batch.pendingEvents.push({
 t: rec.t, siteId: site.id, name: site.name,
 type: rec.up? 'up': 'down',
 detail: rec.up? (prev? '已恢复正常': '首次检测正常'): (rec.err || `HTTP ${rec.status}`),
 });
-if (events.length > EVENTS_CAP) events.length = EVENTS_CAP;
-await kvPutJSON(env, 'events', events);
 }
+if (own) await batch.flush();
 return rec;
 }
 
 async function runCheckAll(env) {
-const sites = await kvGetJSON(env, 'sites', []);
-const batch = await loadHistBatch(env);
-for (const site of sites) await checkSite(env, site, batch);
-await batch.flush();
+let sites, batch;
+try {
+sites = await kvGetJSONStrict(env, 'sites', []);
+batch = await loadHistBatch(env);
+} catch (e) {
+console.error('runCheckAll 启动失败（读 KV 出错，本轮跳过）', e);
+return;
+}
+for (const site of sites) {
+try { await checkSite(env, site, batch); }
+catch (e) { console.error('单站检测异常', site && site.id, e); }
+}
+try { await batch.flush(); } catch (e) { console.error('runCheckAll 落盘失败', e); }
 await kvPutJSON(env, 'meta', { lastCheckAt: Date.now()});
 }
 
