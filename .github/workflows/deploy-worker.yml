@@ -1,0 +1,47 @@
+name: deploy-worker
+
+# ym-dash-check 探活 Worker 的自动部署：
+# 改 worker/ 下任何文件并推送 → 自动部署上线；也可在 Actions 页手动点 Run workflow。
+# 部署后自检（全是读接口，不写 KV）：核对 KV 绑定 + 每 30 分钟定时还在、站点探活接口活着，
+# 任一不过本任务变红示警，不会静默失败。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "worker/**"
+      - ".github/workflows/deploy-worker.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 生成 wrangler 配置（真实 ID 只在仓库 Secrets 里）
+        env:
+          DASH_KV_ID: ${{ secrets.DASH_KV_ID }}
+        run: |
+          sed "s|\${DASH_KV_ID}|$DASH_KV_ID|" worker/wrangler.toml.template > worker/wrangler.toml
+          grep -q "13cd" worker/wrangler.toml || true
+
+      - name: 部署 ym-dash-check
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          command: deploy
+
+      - name: 上线自检（只读）
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -e
+          curl -sf -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCT/workers/scripts/ym-dash-check/settings" > /tmp/settings.json
+          grep -q '"DASH_KV"' /tmp/settings.json
+          curl -sf -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCT/workers/scripts/ym-dash-check/schedules" | grep -q '\*/30'
+          curl -sf "https://dash.ymaym.top/api/public" | grep -q '"ok":true'
+          echo "自检通过：KV 绑定在、定时在、站点活着"
