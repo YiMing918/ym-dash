@@ -1,0 +1,18 @@
+name: CI
+
+# 每次推送与 PR 都跑仓库自带的冒烟测试（此前测试只在本地手动跑，
+# 仓库坏没坏全靠人记得验证）。只读检查，不部署、不写 KV。
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 冒烟测试
+        run: node scripts/smoke.mjs
