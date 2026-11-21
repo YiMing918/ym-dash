@@ -62,6 +62,8 @@ jobs:
           functions/_lib/store.js
           functions/api/[[path]].js
           index.html
+          package.json
+          package-lock.json
           worker/worker.js
           worker/wrangler.toml.example
           worker/wrangler.toml.template

@@ -7,6 +7,7 @@ name: deploy-worker
 # 其中「站点活着」这一项的地址改读仓库变量 SITE_URL（v1.1.3 起）：配了就探
 # <SITE_URL>/api/public，没配就跳过这一项并在日志里说明——部署照常完成。
 # 这样 Fork 本仓库的人不用改工作流文件，也不会拿原作者的站点地址去验活。
+# 部署工具 wrangler 的版本由仓库 package-lock.json 锁定（下面的 npm ci 按锁安装），不再现拉浮动版。
 on:
   workflow_dispatch:
   push:
@@ -19,6 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 按锁文件装部署工具（版本跟仓库走）
+        run: npm ci --no-audit --no-fund
 
       - name: 生成 wrangler 配置（真实 ID 只在仓库 Secrets 里）
         env:
@@ -32,7 +38,7 @@ jobs:
         working-directory: worker
         run: |
           for i in 1 2 3; do
-            npx -y wrangler@3 deploy && exit 0
+            ../node_modules/.bin/wrangler deploy && exit 0
             echo "第 $i 次部署失败，30 秒后重试……"
             sleep 30
           done

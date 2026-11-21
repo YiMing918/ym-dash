@@ -1,0 +1,68 @@
+name: auto-upgrade
+
+# 每周自动试升级（周一 07:20 北京时间）：在锁文件允许的范围内试升部署工具 wrangler，
+# 全套测试 + 工具链验证都过才提交，并触发探活 Worker 正式部署；
+# 任何一步不过就整次作废，仓库和线上保持原样。这台机器自己也靠下面的心跳文件
+# 证明在岗：哪周没留下心跳，就是它自己出故障了，巡检会报出来。
+on:
+  schedule:
+    - cron: '20 23 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-upgrade-ym-dash
+  cancel-in-progress: false
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 试升级依赖（锁文件范围内）
+        run: |
+          npm update --no-audit --no-fund
+          npm ci --no-audit --no-fund
+      - name: 跑仓库测试（不过不提交）
+        run: |
+          node scripts/smoke.mjs
+          node tests/probe-dns.mjs
+          node tests/store-events-session.mjs
+          node tests/c-fixes.mjs
+      - name: 备配置并验工具链（生成 Worker 配置 + 验 wrangler 能跑、令牌能连）
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DASH_KV_ID: ${{ secrets.DASH_KV_ID }}
+        run: |
+          if [ -z "$DASH_KV_ID" ]; then echo "::error::未配置 DASH_KV_ID（仓库 Secrets），终止"; exit 1; fi
+          sed "s|\${DASH_KV_ID}|$DASH_KV_ID|" worker/wrangler.toml.template > worker/wrangler.toml
+          grep -qF "$DASH_KV_ID" worker/wrangler.toml
+          ./node_modules/.bin/wrangler --version
+          ./node_modules/.bin/wrangler whoami
+      - name: 有升级就提交并触发部署，没升级就留心跳
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE=$(TZ=Asia/Shanghai date +%F)
+          echo "last auto-upgrade run: $DATE" > .github/auto-upgrade-heartbeat.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- package.json package-lock.json; then
+            git add .github/auto-upgrade-heartbeat.txt
+            git commit -m "chore: 每周试升级心跳 $DATE [skip ci]"
+            git push
+            echo "本周没有可升级的依赖，已留心跳。"
+          else
+            git add package.json package-lock.json .github/auto-upgrade-heartbeat.txt
+            git commit -m "auto-upgrade: 依赖周更 $DATE（测试全过）"
+            git push
+            gh workflow run deploy-worker.yml --ref main
+            echo "已提交升级并触发正式部署。"
+          fi
