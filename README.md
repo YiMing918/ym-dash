@@ -2,7 +2,7 @@
 
 **自部署的网站状态总览（Status Dashboard）**：把你名下的网站都挂在这一页上——系统每 30 分钟自动探活（Probe，就是「定时去访问一遍你的网站，看它还活着没」）一遍，留历史、算可用率（Uptime）、记掉线与恢复事件。访客打开是只读的公开状态页；站长登录后在页面上点着就能加站、改站、删站，全程不用碰代码。整套跑在 Cloudflare 免费额度里，不需要服务器。
 
-[![Version](https://img.shields.io/badge/version-v1.1.7-blue)](https://github.com/YiMing918/ym-dash/releases/latest) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages-orange) ![Workers KV](https://img.shields.io/badge/Storage-Workers%20KV-blue) ![Cron Worker](https://img.shields.io/badge/Cron-Worker-purple)
+[![Version](https://img.shields.io/badge/version-v1.1.8-blue)](https://github.com/YiMing918/ym-dash/releases/latest) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages-orange) ![Workers KV](https://img.shields.io/badge/Storage-Workers%20KV-blue) ![Cron Worker](https://img.shields.io/badge/Cron-Worker-purple)
 
 **[下载最新版](https://github.com/YiMing918/ym-dash/releases/latest) · [博客教程](https://bk.ymaym.top/post/ym-dash-guide) · [视频教程](https://youtu.be/xnJwhMc85Qw)**
 
@@ -832,6 +832,10 @@ LICENSE MIT 许可证
 | 在岗说明 | 直接打开探活 Worker 地址时它回的一句话，用来确认 Worker 本人活着、在岗 |
 
 ## 更新日志
+
+### v1.1.8（2026-11-23）· 登录用户名与初始化口径对齐（全量审计后修复）
+
+- **修登录时用户名带空格登不进去**：初始化时存的用户名是去掉首尾空格的，登录校验此前没去空格——手机输入法或粘贴带进一个尾随空格，账号密码全对也一直报「用户名或密码不对」，看起来像密码错了。现在登录也先去空格再验，与初始化口径一致。新增 tests/c-fixes.mjs 2 项（改前带空格登录 401 复现、改后通过），自带其余测试不回归。
 
 ### v1.1.7（2026-11-19）· 探活预算轮内兜底 + 事件落盘严格读
 
