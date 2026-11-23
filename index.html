@@ -101,6 +101,15 @@
     <div class="msg err" id="fMsg"></div>
   </div>
 
+    <div class="panel hidden" id="titlePanel">
+    <h3>改标题</h3>
+    <label>站点标题</label><input id="fTitle" placeholder="例如：我的站点总览">
+    <div style="margin-top:12px; display:flex; gap:8px;">
+      <button class="primary" id="fTitleSave">保存</button>
+      <button id="fTitleCancel">取消</button>
+    </div>
+    <div class="msg err" id="fTitleMsg"></div>
+  </div>
   <div class="panel hidden" id="authPanel"></div>
 
   <div class="panel">
@@ -347,12 +356,23 @@ async function checkAll(btn) {
   try { await api('POST', '/api/check'); } catch (e) { alert(e.message); }
   await load();
 }
-async function editTitle() {
-  const t = prompt('新的站点标题：', (state.data && state.data.title) || '站点总览');
-  if (!t) return;
-  await api('PUT', '/api/settings', { title: t });
-  await load();
+function editTitle() {
+  $('#fTitle').value = (state.data && state.data.title) || '站点总览';
+  $('#fTitleMsg').textContent = '';
+  $('#titlePanel').classList.remove('hidden');
+  $('#titlePanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  $('#fTitle').focus();
 }
+$('#fTitleCancel').onclick = () => $('#titlePanel').classList.add('hidden');
+$('#fTitleSave').onclick = async () => {
+  const t = $('#fTitle').value.trim();
+  if (!t) { $('#fTitleMsg').textContent = '标题不能为空'; return; }
+  try {
+    await api('PUT', '/api/settings', { title: t });
+    $('#titlePanel').classList.add('hidden');
+    await load();
+  } catch (e) { $('#fTitleMsg').textContent = e.message; }
+};
 async function copyUrl(id) {
   const s = ((state.data && state.data.sites) || []).find(x => x.id === id);
   const u = s ? s.url : '';
