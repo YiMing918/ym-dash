@@ -113,13 +113,17 @@ export async function handle({ request, env }) {
       const b = await bodyJSON(request);
       const ip = request.headers.get('cf-connecting-ip') || 'unknown';
       if (String(b?.password || '').length > 200) return fail(401, '用户名或密码不对'); // L2
-      const r = await verifyLogin(env, String(b?.username || ''), String(b?.password || ''), ip);
+      // 用户名先 trim 再验：初始化（/api/setup）存的是 trim 后的用户名，
+      // 登录这边旧版没 trim——手机输入法/粘贴带进的首尾空格会让正确
+      // 账号也一直 401，看起来像密码错了。与 setup 口径对齐。
+      const loginName = String(b?.username || '').trim();
+      const r = await verifyLogin(env, loginName, String(b?.password || ''), ip);
       if (!r.ok) {
         if (r.locked) return fail(429, `登录失败次数过多，已锁定到 ${new Date(r.locked).toLocaleString('zh-CN')}`);
         return fail(401, '用户名或密码不对');
       }
-      const token = await createSession(env, String(b.username));
-      return ok({ user: String(b.username) }, { 'set-cookie': sessionCookie(token) });
+      const token = await createSession(env, loginName);
+      return ok({ user: loginName }, { 'set-cookie': sessionCookie(token) });
     }
     if (method === 'POST' && path === '/api/logout') {
       await destroySession(env, request);
