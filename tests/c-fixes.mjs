@@ -262,5 +262,26 @@ chk('C-20 ipBlocked 公网 v6 放行', ipBlocked('2606:4700::1') === false);
   chk('v1.1.7 worker 落盘失败不写 meta.lastCheckAt', (await base.DASH_KV.get('meta')) === null);
 }
 
+// ---------- v1.1.8 登录用户名 trim：与 setup 口径对齐 ----------
+{
+  const env = makeEnv();
+  const setupRes = await handle({
+    request: new Request('https://dash.test/api/setup', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '7.7.7.7' },
+      body: JSON.stringify({ username: '  boss  ', password: 'secret-1' }),
+    }), env,
+  });
+  chk('v1.1.8 前置：带空格用户名初始化成功（存 trim 后）', setupRes.status === 200, 'status=' + setupRes.status);
+  const loginRes = await handle({
+    request: new Request('https://dash.test/api/login', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '7.7.7.8' },
+      body: JSON.stringify({ username: 'boss ', password: 'secret-1' }),
+    }), env,
+  });
+  const lj = await loginRes.json();
+  chk('v1.1.8 登录用户名带尾随空格也能登入', loginRes.status === 200 && lj.ok && lj.data.user === 'boss',
+    `status=${loginRes.status} ${JSON.stringify(lj)}`);
+}
+
 console.log(`\nTOTAL pass=${pass} fail=${failN}`);
 process.exit(failN ? 1 : 0);
