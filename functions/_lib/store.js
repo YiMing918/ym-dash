@@ -157,7 +157,12 @@ export async function loadHistBatch(env, opts = {}) {
         const sameEv = (a, b) => a.siteId === b.siteId && a.type === b.type && a.detail === b.detail;
         for (let i = 0; i < 3; i++) {
           const events = await kvGetJSONStrict(env, 'events', []);
-          await kvPutJSON(env, 'events', [...pending, ...events].slice(0, EVENTS_CAP));
+          // 防自重：上一轮其实已写进 KV、只是回读拿到旧值时，循环会把
+          // pending 再拼一遍（同一事件可重复 2-3 份）。拼前先按
+          // (站点,类型,详情,时间) 全同剔掉已在表里的本轮事件——同 t 必是
+          // 同一事件的副本；跨轮独立翻转 t 不同，不会误删真实历史
+          const fresh = events.filter(e => !pending.some(p => p.siteId === e.siteId && p.type === e.type && p.detail === e.detail && p.t === e.t));
+          await kvPutJSON(env, 'events', [...pending, ...fresh].slice(0, EVENTS_CAP));
           const back = await kvGetJSON(env, 'events', []);
           if (pending.every(e => back.some(x => sameEv(x, e)))) break;
         }
