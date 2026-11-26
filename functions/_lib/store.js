@@ -94,6 +94,7 @@ export async function loadHistBatch(env, opts = {}) {
     touched: new Set(), // 本批次真正 push 过的站：落盘时只合并这些站
     removed: new Set(), // 本批次删掉的站：落盘时从最新值里移除
     pendingEvents: [], // 本轮状态翻转事件：先攒着，落盘时合并写 1 次
+    pendingStates: new Map(), // 本轮状态翻转的新状态：同样先攒着，flush 里与历史/事件一起落盘
     async get(id) {
       if (batch.sites[id]) return batch.sites[id];
       if (!(id in batch.legacy)) batch.legacy[id] = await kvGetJSON(env, `hist:${id}`, []);
@@ -113,7 +114,7 @@ export async function loadHistBatch(env, opts = {}) {
       // 记日志 + 抛错给调用方（runCheckAll 会连带跳过 meta 更新），
       // 旧历史原样留在 KV 里，下一轮重探即可，绝不静默丢。
       let validIds = null;
-      if (batch.dirty || batch.pendingEvents.length) {
+      if (batch.dirty || batch.pendingEvents.length || batch.pendingStates.size) {
         try {
           validIds = new Set((await getSitesStrict(env)).map(s => s.id));
         } catch (e) {
@@ -168,6 +169,20 @@ export async function loadHistBatch(env, opts = {}) {
         }
         batch.pendingEvents = [];
       }
+      if (batch.pendingStates.size) {
+        // 状态与历史/事件同生共死：走到这里说明历史与事件都已落盘，
+        // 才写 state:<id>（同样过 validIds，轮次中被删的站不写）。旧版
+        // 在 checkSite 里当场写 state，flush 中途放弃落盘时就会出现
+        // 「状态已翻转、历史与事件却没落盘」的自相矛盾——downSince
+        // 显示已掉线，可用率曲线里却没有这条记录。若这里写失败抛错，
+        // 调用方按整轮落盘失败处理：prev 仍是旧值，下一轮会重新检出
+        // 翻转并重发事件（事件有去重兜底），是自愈方向。
+        for (const [id, st] of batch.pendingStates) {
+          if (validIds && !validIds.has(id)) continue;
+          await kvPutJSON(env, `state:${id}`, st);
+        }
+        batch.pendingStates.clear();
+      }
     },
   };
   return batch;
@@ -211,7 +226,9 @@ export async function checkSite(env, site, batch) {
   // 状态读用严格版：读失败不能当成「没有旧状态」，否则会凭空造翻转事件
   const prev = await kvGetJSONStrict(env, `state:${site.id}`, null);
   if (!prev || prev.up !== rec.up) {
-    await kvPutJSON(env, `state:${site.id}`, { up: rec.up, since: rec.t });
+    // 状态不当场写 KV：攒进批次，flush 里在历史与事件落盘之后才写，
+    // 保证三者同生共死（见 flush 的 pendingStates 段）。
+    batch.pendingStates.set(site.id, { up: rec.up, since: rec.t });
     // 事件不再当场写 KV：攒进批次，flush 时整轮合并写 1 次。
     // L4：首次检测且正常不发事件——那不是「恢复」，发了会把事件流
     // 刷满无意义的「首次正常」；首次就是异常照常发 down 事件。
