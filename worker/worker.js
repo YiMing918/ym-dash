@@ -88,7 +88,8 @@ const pending = batch.pendingEvents;
 const sameEv = (a, b) => a.siteId === b.siteId && a.type === b.type && a.detail === b.detail; // M4：去重不比时间戳（与 store.js 同步）
 for (let i = 0; i < 3; i++) {
 const events = await kvGetJSONStrict(env, 'events', []);
-await kvPutJSON(env, 'events', pending.concat(events).slice(0, EVENTS_CAP));
+const fresh = events.filter(e => !pending.some(p => p.siteId === e.siteId && p.type === e.type && p.detail === e.detail && p.t === e.t)); // 防自重（与 store.js 同步）：回读旧值触发重拼时，剔掉已在表里的本轮事件副本
+await kvPutJSON(env, 'events', pending.concat(fresh).slice(0, EVENTS_CAP));
 const back = await kvGetJSON(env, 'events', []);
 if (pending.every(e => back.some(x => sameEv(x, e)))) break;
 }
