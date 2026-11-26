@@ -2,7 +2,7 @@
 
 **自部署的网站状态总览（Status Dashboard）**：把你名下的网站都挂在这一页上——系统每 30 分钟自动探活（Probe，就是「定时去访问一遍你的网站，看它还活着没」）一遍，留历史、算可用率（Uptime）、记掉线与恢复事件。访客打开是只读的公开状态页；站长登录后在页面上点着就能加站、改站、删站，全程不用碰代码。整套跑在 Cloudflare 免费额度里，不需要服务器。
 
-[![Version](https://img.shields.io/badge/version-v1.1.8-blue)](https://github.com/YiMing918/ym-dash/releases/latest) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages-orange) ![Workers KV](https://img.shields.io/badge/Storage-Workers%20KV-blue) ![Cron Worker](https://img.shields.io/badge/Cron-Worker-purple)
+[![Version](https://img.shields.io/badge/version-v1.1.9-blue)](https://github.com/YiMing918/ym-dash/releases/latest) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages-orange) ![Workers KV](https://img.shields.io/badge/Storage-Workers%20KV-blue) ![Cron Worker](https://img.shields.io/badge/Cron-Worker-purple)
 
 **[下载最新版](https://github.com/YiMing918/ym-dash/releases/latest) · [博客教程](https://bk.ymaym.top/post/ym-dash-guide) · [视频教程](https://youtu.be/xnJwhMc85Qw)**
 
@@ -832,6 +832,10 @@ LICENSE MIT 许可证
 | 在岗说明 | 直接打开探活 Worker 地址时它回的一句话，用来确认 Worker 本人活着、在岗 |
 
 ## 更新日志
+
+### v1.1.9（2026-11-26）· 状态与历史/事件同生共死（外部审查后修复）
+
+- **修一处结果自相矛盾**：以前状态翻转时 `state:<id>` 是当场单独写的，历史和事件却攒到整轮收尾才落盘；收尾落盘一旦失败（比如读站表出错整轮放弃），就会出现「状态已经翻转、历史和事件却没落盘」——页面上掉线时长已经在走，可用率曲线里却没有这条记录。现在状态也攒进同一批次，历史与事件落盘成功后才写状态；整轮放弃时三者都不写，下一轮重新检出翻转、自愈恢复。站点侧 store.js 与探活 Worker 的 worker.js 两份实现同步修改，仓库三套测试共 51 项全过，另加假 KV 定向验证 11 项（正常落盘三者齐全 / 落盘失败三者都不写 / 无翻转只追加历史）全过。
 
 ### v1.1.8（2026-11-23）· 登录用户名与初始化口径对齐（全量审计后修复）
 
