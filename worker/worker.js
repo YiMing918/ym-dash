@@ -43,6 +43,7 @@ dirty: false,
 touched: new Set(),
 removed: new Set(),
 pendingEvents: [],
+pendingStates: new Map(),
 async get(id) {
 if (batch.sites[id]) return batch.sites[id];
 if (!(id in batch.legacy)) batch.legacy[id] = await kvGetJSON(env, 'hist:' + id, []);
@@ -57,7 +58,7 @@ batch.dirty = true;
 async flush() {
 // H5（与 store.js 同步）：validIds 改严格读，读失败整轮放弃落盘并抛错，绝不静默丢历史
 let validIds = null;
-if (batch.dirty || batch.pendingEvents.length) {
+if (batch.dirty || batch.pendingEvents.length || batch.pendingStates.size) {
 try { validIds = new Set((await kvGetJSONStrict(env, 'sites', [])).map(s => s.id)); }
 catch (e) { console.error('flush 放弃落盘：读取 sites 失败，本轮历史与事件均不写入', e); throw e; }
 }
@@ -94,6 +95,15 @@ const back = await kvGetJSON(env, 'events', []);
 if (pending.every(e => back.some(x => sameEv(x, e)))) break;
 }
 batch.pendingEvents = [];
+}
+if (batch.pendingStates.size) {
+// 状态与历史/事件同生共死（与 store.js 同步）：历史与事件落盘后才写 state:<id>，
+// 同样过 validIds；写失败抛错按整轮落盘失败处理，下一轮重检翻转、自愈
+for (const [id, st] of batch.pendingStates) {
+if (validIds && !validIds.has(id)) continue;
+await kvPutJSON(env, 'state:' + id, st);
+}
+batch.pendingStates.clear();
 }
 },
 };
@@ -301,7 +311,7 @@ await batch.push(site.id, rec);
 
 const prev = await kvGetJSONStrict(env, `state:${site.id}`, null);
 if (!prev || prev.up!== rec.up) {
-await kvPutJSON(env, `state:${site.id}`, { up: rec.up, since: rec.t});
+batch.pendingStates.set(site.id, { up: rec.up, since: rec.t }); // 状态攒进批次，flush 时与历史/事件一起落盘（与 store.js 同步）
 // L4（与 store.js 同步）：首次检测且正常不发事件；首次异常照常发 down
 if (prev || !rec.up) {
 batch.pendingEvents.push({
